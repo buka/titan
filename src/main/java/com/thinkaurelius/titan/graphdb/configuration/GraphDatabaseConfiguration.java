@@ -8,6 +8,7 @@ import com.thinkaurelius.titan.diskstorage.StorageManager;
 import com.thinkaurelius.titan.diskstorage.berkeleydb.je.BerkeleyJEStorageAdapter;
 import com.thinkaurelius.titan.diskstorage.cassandra.CassandraThriftStorageManager;
 import com.thinkaurelius.titan.diskstorage.hbase.HBaseStorageManager;
+import com.thinkaurelius.titan.diskstorage.dynamodb.DynamoDBStorageManager;
 import com.thinkaurelius.titan.graphdb.blueprints.BlueprintsDefaultTypeMaker;
 import com.thinkaurelius.titan.graphdb.database.idassigner.VertexIDAssigner;
 import com.thinkaurelius.titan.graphdb.database.idassigner.SimpleVertexIDAssigner;
@@ -53,6 +54,7 @@ public class GraphDatabaseConfiguration {
         put("berkeleyje", BerkeleyJEStorageAdapter.class);
         put("cassandra", CassandraThriftStorageManager.class);
         put("hbase", HBaseStorageManager.class);
+        put("dynamodb", DynamoDBStorageManager.class);
     }};
 
     private static final Map<String,DefaultTypeMaker> preregisteredAutoType = new HashMap<String,DefaultTypeMaker>() {{
