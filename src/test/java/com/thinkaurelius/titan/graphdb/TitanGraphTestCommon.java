@@ -2,13 +2,11 @@ package com.thinkaurelius.titan.graphdb;
 
 
 import com.thinkaurelius.titan.core.*;
+import com.thinkaurelius.titan.graphdb.configuration.GraphDatabaseConfiguration;
 import com.thinkaurelius.titan.graphdb.types.Directionality;
 import org.apache.commons.configuration.Configuration;
 import org.junit.After;
 import org.junit.Before;
-
-import java.io.Serializable;
-import java.nio.ByteBuffer;
 
 public abstract class TitanGraphTestCommon {
 
@@ -20,11 +18,10 @@ public abstract class TitanGraphTestCommon {
 		this.config = config;
 	}
 
-    public abstract void cleanUp();
-	
 	@Before
 	public void setUp() throws Exception {
-        cleanUp();
+        GraphDatabaseConfiguration graphconfig = new GraphDatabaseConfiguration(config);
+        graphconfig.getStorageManager().clearStorage();
 		open();
 	}
 	
@@ -35,7 +32,7 @@ public abstract class TitanGraphTestCommon {
 	
 	public void open() {
 		graphdb = TitanFactory.open(config);
-		tx = graphdb.startThreadTransaction();
+		tx = graphdb.startTransaction();
 	}
 	
 	public void close() {

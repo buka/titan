@@ -64,17 +64,7 @@ public class CassandraThriftStorageManager implements StorageManager {
      * <p>
      * Value = {@value}
      */
-    public static final String HOSTNAME_DEFAULT = null;
-
-
-
-    /**
-     * Default canonical hostname of the local machine.
-     * <p>
-     * Value = {@value}
-     */
-    public static final String SELF_HOSTNAME_DEFAULT = null;
-    public static final String SELF_HOSTNAME_KEY = "selfHostname";
+    public static final String HOSTNAME_DEFAULT = "127.0.0.1";
 
 
     /**
@@ -117,9 +107,6 @@ public class CassandraThriftStorageManager implements StorageManager {
      */
     public static final String WRITE_CONSISTENCY_LEVEL_DEFAULT = "QUORUM";
     
-
-    public static final String LOCAL_LOCK_MEDIATOR_PREFIX_DEFAULT = "cassandra";
-    
     public static final String REPLICATION_FACTOR_KEY = "replication-factor";
     public static final int REPLICATION_FACTOR_DEFAULT  = 1;
 
@@ -152,7 +139,7 @@ public class CassandraThriftStorageManager implements StorageManager {
 		
 		this.keyspace = config.getString(KEYSPACE_KEY, KEYSPACE_DEFAULT);
 		
-		this.hostname = interpretHostname(config.getString(HOSTNAME_KEY, HOSTNAME_DEFAULT));
+		this.hostname = config.getString(HOSTNAME_KEY, HOSTNAME_DEFAULT);
 		this.port = config.getInt(PORT_KEY, PORT_DEFAULT);
 		
 		this.pool = CTConnectionPool.getPool(
@@ -163,7 +150,7 @@ public class CassandraThriftStorageManager implements StorageManager {
 		this.llmPrefix =
 				config.getString(
 						LOCAL_LOCK_MEDIATOR_PREFIX_KEY,
-						LOCAL_LOCK_MEDIATOR_PREFIX_DEFAULT);
+						getClass().getName());
 		
 		this.replicationFactor = 
 				config.getInt(
@@ -218,7 +205,7 @@ public class CassandraThriftStorageManager implements StorageManager {
 		stores.clear();
 	}
 
-	@Override
+    @Override
 	public CassandraThriftOrderedKeyColumnValueStore openDatabase(final String name)
 			throws GraphStorageException {
 		
@@ -287,17 +274,6 @@ public class CassandraThriftStorageManager implements StorageManager {
 		return store;
 	}
 	
-	/**
-	 * Drop the named keyspace if it exists.  Otherwise, do nothing.
-	 * 
-	 * @throws GraphStorageException wrapping any unexpected Exception or
-	 *         subclass of Exception
-	 * @returns true if the keyspace was dropped, false if it was not present
-	 */
-	public boolean dropKeyspace(String keyspace) throws GraphStorageException {
-		return dropKeyspace(keyspace, hostname, port);
-	}
-	
 	
 	/**
 	 * Connect to Cassandra via Thrift on the specified host and
@@ -307,12 +283,10 @@ public class CassandraThriftStorageManager implements StorageManager {
 	 * equivalent to issuing "drop keyspace {@code <keyspace>};" in
 	 * the cassandra-cli tool.
 	 * 
-	 * @param keyspace the keyspace to drop
 	 * @throws RuntimeException if any checked Thrift or UnknownHostException
 	 *         is thrown in the body of this method
 	 */
-	public static boolean dropKeyspace(String keyspace, String hostname, int port)
-		throws GraphStorageException {
+	public void clearStorage() throws GraphStorageException {
 		CTConnection conn = null;
 		try {
 			conn = CTConnectionPool.getFactory(hostname, port, THRIFT_TIMEOUT_DEFAULT).makeRawConnection();
@@ -332,7 +306,6 @@ public class CassandraThriftStorageManager implements StorageManager {
 				// Try to let Cassandra converge on the new column family
 				CTConnectionFactory.validateSchemaIsSettled(client, schemaVer);
 				
-				return true;
 			} catch (NotFoundException e) {
 				// Keyspace doesn't exist yet: return immediately
 				log.debug("Keyspace {} does not exist, not attempting to drop", 
@@ -344,9 +317,6 @@ public class CassandraThriftStorageManager implements StorageManager {
 			if (null != conn && conn.getTransport().isOpen())
 				conn.getTransport().close();
 		}
-		
-		return false;
-                
 	}
 	
 	private KsDef ensureKeyspaceExists(String name)
@@ -392,29 +362,6 @@ public class CassandraThriftStorageManager implements StorageManager {
 			}
 		}
 	}
-
-    /**
-     * If hostname is non-null, returns hostname.
-     *
-     * If hostname is null, returns the result of calling
-     * InetAddress.getLocalHost().getCanonicalHostName().
-     * Any exceptions generated during said call are rethrown as
-     * RuntimeException.
-     *
-     * @throws RuntimeException in case of UnknownHostException for localhost
-     * @return sanitized hostname
-     */
-    private static String interpretHostname(String hostname) {
-        if (null == hostname) {
-            try {
-                return InetAddress.getLocalHost().getCanonicalHostName();
-            } catch (UnknownHostException e) {
-                throw new RuntimeException(e);
-            }
-        } else {
-            return hostname;
-        }
-    }
     
     private void createColumnFamily(Cassandra.Client client, String ksname, String cfName)
     		throws InvalidRequestException, TException {
