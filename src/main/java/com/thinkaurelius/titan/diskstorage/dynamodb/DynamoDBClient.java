@@ -195,4 +195,22 @@ final class DynamoDBClient {
     }
   }
 
+  void deleteTables(String prefix) {
+    try {
+      ListTablesResult res = _dynamoClient.listTables();
+      for (String t: res.getTableNames()) {
+        if (t.startsWith(prefix)) {
+          try {
+            _dynamoClient.deleteTableAsync(new DeleteTableRequest(t));
+          }
+          catch (Exception ex) {
+            _logger.error("Trapped exception deleting table {}: {}", new Object[]{t, ex.getMessage()});
+          }
+        }
+      }
+    }
+    catch (Exception ex) {
+      _logger.error("Trapped exception deleting tables: {}", ex.getMessage());
+    }
+  }
 }

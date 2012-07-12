@@ -86,10 +86,15 @@ public class DynamoDBStorageManager implements StorageManager {
   @Override
   public void close() {}
 
+  @Override
+  public void clearStorage() {
+    _dynamo.deleteTables(_tablePrefix+".");
+  }
+
   private final OrderedKeyColumnValueStore _openDatabase(String name, LocalLockMediator llm, OrderedKeyColumnValueStore lockStore)
     throws GraphStorageException {
 
-    _dynamo.ensureTable( _tablePrefix+"."+name);
+    _dynamo.ensureTable( _tablePrefix+"."+name );
 
     return new DynamoDBOrderedKeyColumnValueStore(_tablePrefix, name, _dynamo, lockStore, llm, _rid, _lockRetryCount, _lockWaitMS, _lockExpiresMS);
   }
