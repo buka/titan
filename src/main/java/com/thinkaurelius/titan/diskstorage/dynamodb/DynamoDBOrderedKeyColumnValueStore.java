@@ -77,6 +77,9 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 	private final DynamoDBClient 	_dynamoClient;
 	private final boolean					_forceConsistentRead;
 	private final long						_futuresTimeout;
+  //private final long            _readCapacity;
+  private final long            _writeCapacity;
+  private DataWindow            _writeWindow;
 
 	DynamoDBOrderedKeyColumnValueStore(String tablePrefix,
 																		 String tableName,
@@ -93,6 +96,9 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 		_dynamoClient = dynamoClient;
 		_futuresTimeout = dynamoClient.futuresTimeoutMillis();
 		_forceConsistentRead = dynamoClient.forceConsistentRead();
+    //_readCapacity = dynamoClient.readCapacity();
+    _writeCapacity = dynamoClient.writeCapacity();
+    _writeWindow = new DataWindow(_writeCapacity * 1024);
 
 		if (null != llm && null != lockStore) {
 			_internals = new SimpleLockConfig(this, lockStore, llm, rid, lockRetryCount, lockWaitMS, lockExpireMS);
@@ -242,87 +248,80 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 
 	@Override
 	public void mutate(ByteBuffer key, List<Entry> additions, List<ByteBuffer> deletions, TransactionHandle txh) {
-    String adds = new String();
-    String rms = new String();
-    if (additions != null) {
-      for (Entry e : additions) {
-        adds += "col: "+_EncodeBuffer(e.getColumn()) + " val: " + _EncodeBuffer(e.getValue()) +", ";
-      }
-    }
-    if (deletions != null) {
-      for (ByteBuffer b : deletions) {
-        rms += "col: "+_EncodeBuffer(b) +", ";
-      }
-    }
+    Map<ByteBuffer, Mutation> map = new HashMap<ByteBuffer, Mutation>(1);
+    map.put(key, new Mutation(additions, deletions));
 
-    // null txh means a LockingTransaction is calling this method
-		if (null != txh) {
-				// non-null txh -> make sure locks are valid
-			DynamoDBTransaction lt = (DynamoDBTransaction)txh;
-			if (! lt.isMutationStarted()) {
-					// This is the first mutate call in the transaction
-				lt.mutationStarted();
-					// Verify all blind lock claims now
-				lt.verifyAllLockClaims(); // throws GSE and unlocks everything on any lock failure
-			}
-		}
-
-		try {
-			String dynKey = _EncodeBuffer(key);
-      _logger.debug("mutate key {} adds {} deletes {}",
-              new Object[]{
-                      dynKey,
-                      adds,
-                      rms
-              });
-
-      UpdateItemRequest req = new UpdateItemRequest().withTableName(_table).withKey(new Key(new AttributeValue(dynKey)));
-
-	    Map<String, AttributeValueUpdate> attrUpdates = new HashMap<String, AttributeValueUpdate>();
-
-			if (null != deletions) {
-				for (ByteBuffer attr: deletions) {
-					attrUpdates.put(_EncodeBuffer(attr), new AttributeValueUpdate().withAction(AttributeAction.DELETE));
-				}
-			}
-
-			if (null != additions) {
-				for (Entry e: additions) {
-					attrUpdates.put(_EncodeBuffer(e.getColumn()),
-													new AttributeValueUpdate(new AttributeValue(_EncodeBuffer(e.getValue())), AttributeAction.PUT));
-				}
-			}
-
-			_logger.debug("Mutating: {}",attrUpdates);
-
-			_dynamoClient.client().updateItem(req.withAttributeUpdates(attrUpdates));
-		}
-    catch (AmazonClientException ex) {
-      throw new GraphStorageException(ex);
-    }
+    mutateMany(map, txh);
 	}
 
 	@Override
 	public void mutateMany(Map<ByteBuffer, Mutation> mutations, TransactionHandle txh) {
+    List<Future<?>> futures = _mutate(mutations, txh);
 
-			// null txh means a LockingTransaction is calling this method
-		if (null != txh) {
-				// non-null txh -> make sure locks are valid
-			DynamoDBTransaction lt = (DynamoDBTransaction)txh;
-			if (! lt.isMutationStarted()) {
-					// This is the first mutate call in the transaction
-				lt.mutationStarted();
-					// Verify all blind lock claims now
-				lt.verifyAllLockClaims(); // throws GSE and unlocks everything on any lock failure
-			}
-		}
-
-			// cool because its simple but probably a perfo killer
-			// trouble is AWS doesn't allow per-field modification in batch
-		for (Map.Entry<ByteBuffer, Mutation> mutant : mutations.entrySet()) {
-			mutate(mutant.getKey(), mutant.getValue().getAdditions(), mutant.getValue().getDeletions(), null);
-		}
+      // would kill for composition here...
+    for (Future<?> f: futures) {
+      try {
+        f.get(_futuresTimeout, TimeUnit.MILLISECONDS);
+      }
+      catch (Exception ex) {
+        throw new GraphStorageException(ex);
+      }
+    }
 	}
+
+  private List<Future<?>> _mutate(Map<ByteBuffer, Mutation> mutations, TransactionHandle txh) {
+
+    // null txh means a LockingTransaction is calling this method
+    if (null != txh) {
+        // non-null txh -> make sure locks are valid
+      DynamoDBTransaction lt = (DynamoDBTransaction)txh;
+      if (! lt.isMutationStarted()) {
+          // This is the first mutate call in the transaction
+        lt.mutationStarted();
+          // Verify all blind lock claims now
+        lt.verifyAllLockClaims(); // throws GSE and unlocks everything on any lock failure
+      }
+    }
+
+    try {
+      ArrayList<Future<?>> futures = new ArrayList<Future<?>>(mutations.size());
+
+      for (Map.Entry<ByteBuffer, Mutation> mutant : mutations.entrySet()) {
+        String dynKey = _EncodeBuffer(mutant.getKey());
+        Mutation mutation = mutant.getValue();
+
+        UpdateItemRequest req = new UpdateItemRequest().withTableName(_table).withKey(new Key(new AttributeValue(dynKey)));
+        Map<String, AttributeValueUpdate> attrUpdates = new HashMap<String, AttributeValueUpdate>();
+
+        List<Entry> additions = mutation.getAdditions();
+        List<ByteBuffer> deletions = mutation.getDeletions();
+
+        if (null != deletions) {
+          for (ByteBuffer attr: deletions) {
+            attrUpdates.put(_EncodeBuffer(attr), new AttributeValueUpdate().withAction(AttributeAction.DELETE));
+          }
+        }
+
+        if (null != additions) {
+          for (Entry e: additions) {
+            attrUpdates.put(_EncodeBuffer(e.getColumn()),
+                            new AttributeValueUpdate(new AttributeValue(_EncodeBuffer(e.getValue())), AttributeAction.PUT));
+          }
+        }
+
+        _logger.debug("Mutating: {}",attrUpdates);
+        
+        //_writeWindow.push(req.toString().length());
+
+        futures.add(_dynamoClient.client().updateItemAsync(req.withAttributeUpdates(attrUpdates)));
+      }
+
+      return futures;
+    }
+    catch (AmazonClientException ex) {
+      throw new GraphStorageException(ex);
+    }
+  }  
 
 	@Override
 	public void acquireLock(ByteBuffer key, ByteBuffer column, ByteBuffer expectedValue, TransactionHandle txh) {
@@ -361,6 +360,55 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 
     public int compare(Entry left, Entry right) {
       return _EncodeBuffer(left.getColumn()).compareTo(_EncodeBuffer((right.getColumn())));
+    }
+  }
+
+  private final class DataWindow {
+    private final long _limit;
+    private final long _rate = 1500L;
+    private TreeMap<Long, Integer> _table = new TreeMap<Long, Integer>();
+
+    private final Logger _logger = LoggerFactory.getLogger(DynamoDBOrderedKeyColumnValueStore.class);
+
+    public DataWindow(long limit) {
+      _limit = limit;
+    }
+
+    public void push(int bytes) {
+        // as capacity units
+      bytes = (1+(bytes/1024))*1024;
+
+      long now = System.currentTimeMillis();
+
+      _table.put(now, bytes);
+
+      SortedMap<Long, Integer> stale = _table.headMap(now - _rate);
+      SortedMap<Long, Integer> live = _table.tailMap(now - _rate, true);
+
+      int payload = 0;
+      for (int v: live.values()) {
+        payload += v;
+      }
+
+      while (payload >= _limit) {
+        long delay = System.currentTimeMillis() - (live.firstKey());
+        _logger.warn("Attempt to write {} bytes/sec exceeds capacity limits - throttling back for {} ms.", new Object[]{payload, delay});
+        try {
+          Thread.sleep(delay);
+        }
+        catch (Exception ex) {
+          _logger.error("Trapped exception from thread sleep: {}", ex.getMessage());
+        }
+
+        live.remove(live.firstKey());
+
+        payload = 0;
+        for (int v: live.values()) {
+          payload += v;
+        }
+      }
+
+      _table = new TreeMap<Long, Integer>(live);
     }
   }
 }

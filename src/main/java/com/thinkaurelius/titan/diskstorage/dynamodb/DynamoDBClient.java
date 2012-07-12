@@ -22,6 +22,8 @@ final class DynamoDBClient {
 
   static final String FORCE_CONSISTENT_READ                    = "force-consistent-read";
   static final String FUTURES_TIMEOUT                          = "futures-timeout";
+  static final String READ_THROUGHPUT                          = "read-throughput";
+  static final String WRITE_THROUGHPUT                         = "write-throughput";
   static final String VERBOSE_LOGGING                          = "verbose-logging";
   static final String CREDENTIALS_KEY                          = "credentials-key";
   static final String CREDENTIALS_SECRET                       = "credentials-secret";
@@ -45,6 +47,8 @@ final class DynamoDBClient {
   static final boolean FORCE_CONSISTENT_READ_DEFAULT           = false;
   static final boolean VERBOSE_LOGGING_DEFAULT                 = false;
   static final long    FUTURES_TIMEOUT_DEFAULT                 = 60000L;   // ms
+  static final long    READ_THROUGHPUT_DEFAULT                 = 5L;
+  static final long    WRITE_THROUGHPUT_DEFAULT                = 10L;
   static final int     CLIENT_CONN_TIMEOUT_DEFAULT             = 60000;    // ms
   static final int     CLIENT_SOCKET_BUFFER_SEND_HINT_DEFAULT  = 1048576;  // 1MB
   static final int     CLIENT_SOCKET_BUFFER_RECV_HINT_DEFAULT  = 1048576;  // 1MB
@@ -60,6 +64,9 @@ final class DynamoDBClient {
   private final long                      _futuresTimeout;
   private final AmazonDynamoDBAsyncClient _dynamoClient;
   private final ExecutorService           _dynamoClientThreadPool;
+
+  private long                            _readCap;
+  private long                            _writeCap;
 
   DynamoDBClient(org.apache.commons.configuration.Configuration config) {
 
@@ -84,6 +91,8 @@ final class DynamoDBClient {
     _verbose = config.getBoolean(VERBOSE_LOGGING, VERBOSE_LOGGING_DEFAULT);
     _forceConsistentRead = config.getBoolean(FORCE_CONSISTENT_READ, FORCE_CONSISTENT_READ_DEFAULT);
     _futuresTimeout = config.getLong(FUTURES_TIMEOUT, FUTURES_TIMEOUT_DEFAULT);
+    _readCap = config.getLong(READ_THROUGHPUT, READ_THROUGHPUT_DEFAULT);
+    _writeCap = config.getLong(WRITE_THROUGHPUT, WRITE_THROUGHPUT_DEFAULT);
 
       // use this one for now, can build executors from config if really need be...
     _dynamoClientThreadPool = Executors.newCachedThreadPool();
@@ -100,6 +109,14 @@ final class DynamoDBClient {
 
   long futuresTimeoutMillis() {
     return _futuresTimeout;
+  }
+
+  long readCapacity() {
+    return _readCap;
+  }
+
+  long writeCapacity() {
+    return _writeCap;
   }
 
   boolean verbose() {
@@ -128,8 +145,8 @@ final class DynamoDBClient {
               .withAttributeName("_titan_key")
               .withAttributeType("S")))
           .withProvisionedThroughput(new ProvisionedThroughput()
-              .withReadCapacityUnits(5L)
-              .withWriteCapacityUnits(5L)));
+              .withReadCapacityUnits(_readCap)
+              .withWriteCapacityUnits(_writeCap)));
 
       _logger.debug("Table {} created. STATE ({})", new Object[] {name, res.getTableDescription().getTableStatus()});
 
@@ -161,6 +178,11 @@ final class DynamoDBClient {
         if (status.equals("DELETING")) {
           throw new GraphStorageException("Table {} is currently being deleted".format(name));
         }
+
+        ProvisionedThroughputDescription prov = desc.getProvisionedThroughput();
+        _readCap = prov.getReadCapacityUnits();
+        _writeCap = prov.getWriteCapacityUnits();
+
         _logger.debug("Table {} already exists. Status ({}) Size ({} MB) Created ({})", new Object []{status, (desc.getTableSizeBytes()/1048576), desc.getCreationDateTime().toString()});
         return false;
       }
