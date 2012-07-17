@@ -4,8 +4,11 @@ package com.thinkaurelius.titan.diskstorage.dynamodb;
 import java.util.*;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CountDownLatch;
 import java.nio.ByteBuffer;
 
 import org.slf4j.Logger;
@@ -50,10 +53,6 @@ import com.amazonaws.services.dynamodb.AmazonDynamoDBAsyncClient;
  *    - GetSlice grabs all fields of the specified item since I don't know enough about how the rules around
  *      what columns are passed to this call. It then sorts are filters those lexigraphically outside the
  *      desired range (if applicable).
- *    - MutateMany is implemented as a loop over mutate() since DynamoDB doesn't (yet?) provide a multiple item
- *      batch command for attribute updates.  Also the loop is something that can and will be parallelized by using
- *      the async API and blocking on all futures before returning.  Again, would be great knowing more about the
- *      design and constraints and expectations regarding timing and consistency...
  *    - DynamoDB is a little funny... tables take a while to reach 'created' states. Low lock times can lead to
  *      unnecessary timeouts in the Titan code too.
  *    - Did I mention this is an experiment and shouldn't be used?
@@ -79,7 +78,6 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 	private final long						_futuresTimeout;
   //private final long            _readCapacity;
   private final long            _writeCapacity;
-  private DataWindow            _writeWindow;
 
 	DynamoDBOrderedKeyColumnValueStore(String tablePrefix,
 																		 String tableName,
@@ -98,7 +96,6 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 		_forceConsistentRead = dynamoClient.forceConsistentRead();
     //_readCapacity = dynamoClient.readCapacity();
     _writeCapacity = dynamoClient.writeCapacity();
-    _writeWindow = new DataWindow(_writeCapacity * 1024);
 
 		if (null != llm && null != lockStore) {
 			_internals = new SimpleLockConfig(this, lockStore, llm, rid, lockRetryCount, lockWaitMS, lockExpireMS);
@@ -109,6 +106,7 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 
 	@Override
 	public void close() throws GraphStorageException {
+    _dynamoClient.shutdown();
 	}
 
 	@Override
@@ -118,9 +116,6 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 
       String dynKey = _EncodeBuffer(key);
       String dynAttr = _EncodeBuffer(column);
-
-      _logger.debug("get key {} column {} ", new Object[]{dynKey, dynAttr});
-
 
 			GetItemResult res = _dynamoClient.client()
 														.getItem(new GetItemRequest()
@@ -141,8 +136,6 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 				return _empty;
 			}
 
-				// convert encoded attribute string to byte buffer
-      _logger.debug("Get returning {}", val.getS());
 			return _DecodeString(val.getS());
 		}
     catch (AmazonClientException ex) {
@@ -170,19 +163,11 @@ public class DynamoDBOrderedKeyColumnValueStore implements
     try {
 			String dynKey = _EncodeBuffer(key);
 
-      _logger.debug("getSlice key {} start {} end {} limit {}",
-              new Object[]{
-                      dynKey,
-                      _EncodeBuffer(columnStart),
-                      _EncodeBuffer(columnEnd),
-                      limit
-              });
 
       // without knowing more about how the columns are constructed,
       // right now, we'll just pull all attributes and trim the others away...
       // TODO: definitely can improve this with more internal info
 
-      _logger.debug("Getting item... consistent reads: {}",Boolean.toString(_forceConsistentRead));
 			GetItemResult res = _dynamoClient.client()
 														.getItem(new GetItemRequest()
                                          	.withKey(new Key(new AttributeValue(dynKey)))
@@ -227,14 +212,7 @@ public class DynamoDBOrderedKeyColumnValueStore implements
         }
       }
 
-      List<Entry> slice = results.subList(istart, Math.min(iend, limit));
-
-      String adds = new String();
-      for (Entry e : slice) {
-        adds += "col: "+_EncodeBuffer(e.getColumn()) + " val: " + _EncodeBuffer(e.getValue()) +", ";
-      }
-      _logger.debug("getSlice returning {}", adds);
-      return slice;
+      return results.subList(istart, Math.min(iend, limit));
 		}
     catch (AmazonClientException ex) {
       throw new GraphStorageException(ex);
@@ -270,6 +248,7 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 	}
 
   private List<Future<?>> _mutate(Map<ByteBuffer, Mutation> mutations, TransactionHandle txh) {
+
 
     // null txh means a LockingTransaction is calling this method
     if (null != txh) {
@@ -309,12 +288,9 @@ public class DynamoDBOrderedKeyColumnValueStore implements
           }
         }
 
-        _logger.debug("Mutating: {}",attrUpdates);
-        
-        //_writeWindow.push(req.toString().length());
-
-        futures.add(_dynamoClient.client().updateItemAsync(req.withAttributeUpdates(attrUpdates)));
+        futures.add(_dynamoClient.client().updateItemAsync(req.withAttributeUpdates(attrUpdates).withReturnValues(ReturnValue.NONE)));
       }
+
 
       return futures;
     }
@@ -360,55 +336,6 @@ public class DynamoDBOrderedKeyColumnValueStore implements
 
     public int compare(Entry left, Entry right) {
       return _EncodeBuffer(left.getColumn()).compareTo(_EncodeBuffer((right.getColumn())));
-    }
-  }
-
-  private final class DataWindow {
-    private final long _limit;
-    private final long _rate = 1500L;
-    private TreeMap<Long, Integer> _table = new TreeMap<Long, Integer>();
-
-    private final Logger _logger = LoggerFactory.getLogger(DynamoDBOrderedKeyColumnValueStore.class);
-
-    public DataWindow(long limit) {
-      _limit = limit;
-    }
-
-    public void push(int bytes) {
-        // as capacity units
-      bytes = (1+(bytes/1024))*1024;
-
-      long now = System.currentTimeMillis();
-
-      _table.put(now, bytes);
-
-      SortedMap<Long, Integer> stale = _table.headMap(now - _rate);
-      SortedMap<Long, Integer> live = _table.tailMap(now - _rate, true);
-
-      int payload = 0;
-      for (int v: live.values()) {
-        payload += v;
-      }
-
-      while (payload >= _limit) {
-        long delay = System.currentTimeMillis() - (live.firstKey());
-        _logger.warn("Attempt to write {} bytes/sec exceeds capacity limits - throttling back for {} ms.", new Object[]{payload, delay});
-        try {
-          Thread.sleep(delay);
-        }
-        catch (Exception ex) {
-          _logger.error("Trapped exception from thread sleep: {}", ex.getMessage());
-        }
-
-        live.remove(live.firstKey());
-
-        payload = 0;
-        for (int v: live.values()) {
-          payload += v;
-        }
-      }
-
-      _table = new TreeMap<Long, Integer>(live);
     }
   }
 }

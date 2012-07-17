@@ -2,9 +2,12 @@ package com.thinkaurelius.titan.diskstorage.dynamodb;
 
 
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,9 +43,9 @@ final class DynamoDBClient {
   static final String CLIENT_SOCKET_BUFFER_RECV_HINT           = "socket-buffer-recv-hint";
   static final String CLIENT_SOCKET_TIMEOUT                    = "socket-timeout";
   static final String CLIENT_USER_AGENT                        = "user-agent";
-  //static final String CLIENT_EXECUTOR_CORE_POOL_SIZE         = "executor-core-pool-size";
-  //static final String CLIENT_EXECUTOR_MAX_POOL_SIZE          = "executor-max-pool-size";
-  //static final String CLIENT_EXECUTOR_KEEP_ALIVE             = "executor-keep-alive";
+  static final String CLIENT_EXECUTOR_CORE_POOL_SIZE           = "executor-core-pool-size";
+  static final String CLIENT_EXECUTOR_MAX_POOL_SIZE            = "executor-max-pool-size";
+  static final String CLIENT_EXECUTOR_KEEP_ALIVE               = "executor-keep-alive";
 
   static final boolean FORCE_CONSISTENT_READ_DEFAULT           = false;
   static final boolean VERBOSE_LOGGING_DEFAULT                 = false;
@@ -52,9 +55,9 @@ final class DynamoDBClient {
   static final int     CLIENT_CONN_TIMEOUT_DEFAULT             = 60000;    // ms
   static final int     CLIENT_SOCKET_BUFFER_SEND_HINT_DEFAULT  = 1048576;  // 1MB
   static final int     CLIENT_SOCKET_BUFFER_RECV_HINT_DEFAULT  = 1048576;  // 1MB
-  //static final int    CLIENT_EXECUTOR_CORE_POOL_SIZE         = Runtime.getRuntime().availableProcessors() * 2;
-  //static final int    CLIENT_EXECUTOR_MAX_POOL_SIZE          = CLIENT_EXECUTOR_CORE_POOL_SIZE * 4;
-  //static final long   CLIENT_EXECUTOR_KEEP_ALIVE             = 60000;
+  static final int     CLIENT_EXECUTOR_CORE_POOL_SIZE_DEFAULT  = Runtime.getRuntime().availableProcessors() * 2;
+  static final int     CLIENT_EXECUTOR_MAX_POOL_SIZE_DEFAULT   = Runtime.getRuntime().availableProcessors() * 4;
+  static final long    CLIENT_EXECUTOR_KEEP_ALIVE_DEFAULT      = 60000;
 
 
   private static final Logger             _logger = LoggerFactory.getLogger(DynamoDBClient.class);
@@ -63,7 +66,7 @@ final class DynamoDBClient {
   private final boolean                   _verbose;
   private final long                      _futuresTimeout;
   private final AmazonDynamoDBAsyncClient _dynamoClient;
-  private final ExecutorService           _dynamoClientThreadPool;
+  private final ThreadPoolExecutor        _dynamoClientThreadPool;
 
   private long                            _readCap;
   private long                            _writeCap;
@@ -95,8 +98,18 @@ final class DynamoDBClient {
     _writeCap = config.getLong(WRITE_THROUGHPUT, WRITE_THROUGHPUT_DEFAULT);
 
       // use this one for now, can build executors from config if really need be...
-    _dynamoClientThreadPool = Executors.newCachedThreadPool();
+    _dynamoClientThreadPool = new ThreadPoolExecutor(config.getInt(CLIENT_EXECUTOR_CORE_POOL_SIZE, CLIENT_EXECUTOR_CORE_POOL_SIZE_DEFAULT), 
+                                                     config.getInt(CLIENT_EXECUTOR_MAX_POOL_SIZE, CLIENT_EXECUTOR_MAX_POOL_SIZE_DEFAULT), 
+                                                     config.getLong(CLIENT_EXECUTOR_KEEP_ALIVE, CLIENT_EXECUTOR_KEEP_ALIVE_DEFAULT), 
+                                                     TimeUnit.MILLISECONDS,
+                                                     new LinkedBlockingQueue<Runnable>());
+
     _dynamoClient = new AmazonDynamoDBAsyncClient(credentials, clientConfig, _dynamoClientThreadPool);
+  }
+
+  void shutdown() {
+    _dynamoClientThreadPool.shutdown();
+    _dynamoClient.shutdown();
   }
 
   AmazonDynamoDBAsyncClient client() {
