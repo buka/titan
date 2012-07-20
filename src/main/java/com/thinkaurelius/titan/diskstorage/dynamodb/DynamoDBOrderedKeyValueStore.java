@@ -37,7 +37,6 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
 
   private static final Logger _logger = LoggerFactory.getLogger(DynamoDBOrderedKeyValueStore.class);
   private static final ByteBuffer _EmptyBuffer = ByteBuffer.allocate(0);
-  private static final String _ValueAttribute = "_value";
 
 
   private final String 					_prefix;
@@ -69,7 +68,9 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
     _writeCapacity = dynamoClient.writeCapacity();
 
 		if (null != llm && null != lockStore) {
-			_internals = new SimpleLockConfig(this, lockStore, llm, rid, lockRetryCount, lockWaitMS, lockExpireMS);
+			_internals = new SimpleLockConfig(new OrderedKeyValueStoreAdapter(this), 
+                                        new OrderedKeyValueStoreAdapter(lockStore), 
+                                        llm, rid, lockRetryCount, lockWaitMS, lockExpireMS);
 		} else {
 			_internals = null;
 		}
@@ -85,13 +86,13 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
 
 		try {
 
-      String dynKey = _EncodeBuffer(key);
+      String dynKey = _EncodeKeyBuffer(key);
 
 			GetItemResult res = _dynamoClient.client()
 														.getItem(new GetItemRequest()
                                          	.withKey(new Key(new AttributeValue(dynKey)))
                                           .withTableName(_table)
-                                          .withAttributesToGet(_ValueAttribute)
+                                          .withAttributesToGet(DynamoDBClient.TITAN_VALUE)
                                           .withConsistentRead(_forceConsistentRead));
 
 			Map<String,AttributeValue> item = res.getItem();
@@ -100,7 +101,7 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
 				return null;
 			}
 
-			AttributeValue val = item.get(_ValueAttribute); 
+			AttributeValue val = item.get(DynamoDBClient.TITAN_VALUE); 
 			if (val == null) {
 				_logger.debug("No data for key {}", dynKey);
 				return _EmptyBuffer;
@@ -135,15 +136,31 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
   
   @Override
   public List<KeyValueEntry> getSlice(ByteBuffer keyStart, ByteBuffer keyEnd, KeySelector selector, TransactionHandle txh) {
-    ArrayList<KeyValueEntry> results = null;
+    ArrayList<KeyValueEntry> results = new ArrayList<KeyValueEntry>();
 
     try {
+      Map<String, Condition> filter = new HashMap<String, Condition>();
+      filter.put(DynamoDBClient.TITAN_KEY, new Condition().withAttributeValueList(new AttributeValue(_EncodeKeyBuffer(keyStart)), new AttributeValue(_EncodeKeyBuffer(keyEnd)))
+                                                          .withComparisonOperator("BETWEEN"));
+
+      _logger.info("SCAN FILTER: {}",filter.toString());
+      ScanResult res = _dynamoClient.client().scan(new ScanRequest(_table).withScanFilter(filter).withAttributesToGet(DynamoDBClient.TITAN_KEY, DynamoDBClient.TITAN_VALUE));
+      for (Map<String,AttributeValue> item: res.getItems()) {
+        for (Map.Entry<String,AttributeValue> e: item.entrySet()) {
+          _logger.info("BATCH RETURNED: {} -> {}",new Object[]{e.getKey(), e.getValue().getS()});
+          results.add(new KeyValueEntry(_DecodeString(e.getKey()), _DecodeString(e.getValue().getS())));
+        }
+      }
+
+
+
+/*
       Map<String,KeysAndAttributes> query = new HashMap<String,KeysAndAttributes>();
       ByteBuffer nextKey = keyStart;
 
       while (!selector.reachedLimit()) {
         if (selector.include(nextKey)) {
-          query.put(_table, new KeysAndAttributes().withKeys(new Key().withHashKeyElement(new AttributeValue(_EncodeBuffer(nextKey)))).withAttributesToGet(_ValueAttribute));
+          query.put(_table, new KeysAndAttributes().withKeys(new Key().withHashKeyElement(new AttributeValue(_EncodeBuffer(nextKey)))).withAttributesToGet(DynamoDBClient.TITAN_KEY, DynamoDBClient.TITAN_VALUE));
           nextKey = ByteBufferUtil.nextBiggerBuffer(nextKey);
           if (!ByteBufferUtil.isSmallerThanWithEqual(nextKey, keyEnd, false)) {
             break;
@@ -168,6 +185,7 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
         query = res.getUnprocessedKeys();
         if (query == null || query.size() == 0) break;
       }
+*/
     }
     catch (AmazonClientException ex) {
       throw new GraphStorageException(ex);
@@ -180,8 +198,8 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
   public void insert(List<KeyValueEntry> entries, TransactionHandle txh) {
     try {
       ArrayList<Map<String,List<WriteRequest>>> all = new ArrayList<Map<String,List<WriteRequest>>>();
-      Map<String,List<WriteRequest>> req;
-      ArrayList<WriteRequest> writes;
+      Map<String,List<WriteRequest>> req = null;
+      ArrayList<WriteRequest> writes = null;
 
       int count = 0;
       for (KeyValueEntry entry: entries) {
@@ -193,7 +211,9 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
         }
 
         Map<String,AttributeValue> item = new HashMap<String,AttributeValue>();
-        item.put(_EncodeBuffer(entry.getKey()), new AttributeValue(_EncodeBuffer(entry.getValue())));
+        item.put(DynamoDBClient.TITAN_KEY, new AttributeValue(_EncodeKeyBuffer(entry.getKey())));
+        item.put(DynamoDBClient.TITAN_VALUE, new AttributeValue(_EncodeValueBuffer(entry.getValue())));
+        _logger.info("INSERT ITEM {}",item.toString());
         writes.add(new WriteRequest().withPutRequest(new PutRequest().withItem(item)));
         ++count;
       }
@@ -214,8 +234,8 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
   public void delete(List<ByteBuffer> keys, TransactionHandle txh) {
     try {
       ArrayList<Map<String,List<WriteRequest>>> all = new ArrayList<Map<String,List<WriteRequest>>>();
-      Map<String,List<WriteRequest>> req;
-      ArrayList<WriteRequest> writes;
+      Map<String,List<WriteRequest>> req = null;
+      ArrayList<WriteRequest> writes = null;
 
       int count = 0;
       for (ByteBuffer key: keys) {
@@ -226,7 +246,7 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
           all.add(req);
         }
 
-        writes.add(new WriteRequest().withDeleteRequest(new DeleteRequest().withKey(new Key().withHashKeyElement(new AttributeValue(_EncodeBuffer(key))))));
+        writes.add(new WriteRequest().withDeleteRequest(new DeleteRequest().withKey(new Key().withHashKeyElement(new AttributeValue(_EncodeKeyBuffer(key))))));
         ++count;
       }
 
@@ -249,10 +269,19 @@ public class DynamoDBOrderedKeyValueStore implements OrderedKeyValueStore {
 			throw new GraphStorageException("Attempted to obtain a lock after one or more mutations");
 		}
 
-		lt.writeBlindLockClaim(_internals, key, expectedValue);
+		lt.blindClaim(_internals, key, expectedValue);
 	}
 
-  private static String _EncodeBuffer(ByteBuffer buf) {
+  private static String _EncodeKeyBuffer(ByteBuffer buf) {
+//    return ByteBufferUtil.toBitString(buf, ":");
+    if (buf == null || buf.limit() == 0) {
+      return "~";
+    }
+
+    return Base64.encodeBase64URLSafeString(Arrays.copyOf(buf.array(), buf.limit()));
+  }
+
+  private static String _EncodeValueBuffer(ByteBuffer buf) {
     if (buf == null || buf.limit() == 0) {
       return "~";
     }

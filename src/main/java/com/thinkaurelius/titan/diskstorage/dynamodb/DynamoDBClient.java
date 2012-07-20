@@ -23,6 +23,9 @@ import com.thinkaurelius.titan.core.GraphStorageException;
 
 final class DynamoDBClient {
 
+  public static final String TITAN_KEY                         = "_tk";
+  public static final String TITAN_VALUE                       = "_tv";
+
   static final String FORCE_CONSISTENT_READ                    = "force-consistent-read";
   static final String FUTURES_TIMEOUT                          = "futures-timeout";
   static final String READ_THROUGHPUT                          = "read-throughput";
@@ -155,7 +158,7 @@ final class DynamoDBClient {
           .withTableName(name)
           .withKeySchema(new KeySchema()
             .withHashKeyElement(new KeySchemaElement()
-              .withAttributeName("_titan_key")
+              .withAttributeName(TITAN_KEY)
               .withAttributeType("S")))
           .withProvisionedThroughput(new ProvisionedThroughput()
               .withReadCapacityUnits(_readCap)

@@ -24,7 +24,7 @@ import com.amazonaws.services.dynamodb.AmazonDynamoDBAsyncClient;
  * @author Garrick Evans <garrick.evans@autodesk.com>
  */
 public class DynamoDBStorageManager implements StorageManager {
-
+  
   public static final String TABLE_PREFIX                       = "table-prefix";
   public static final String TABLE_PREFIX_DEFAULT               = "titan";
   public static final String LOCAL_LOCK_MEDIATOR_PREFIX_DEFAULT = "dynamodb";

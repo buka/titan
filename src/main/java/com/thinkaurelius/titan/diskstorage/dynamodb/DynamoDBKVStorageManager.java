@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import com.thinkaurelius.titan.core.GraphDatabaseException;
 import com.thinkaurelius.titan.core.GraphStorageException;
+import com.thinkaurelius.titan.diskstorage.StorageManager;
 import com.thinkaurelius.titan.diskstorage.TransactionHandle;
 import com.thinkaurelius.titan.diskstorage.locking.LocalLockMediator;
 import com.thinkaurelius.titan.diskstorage.locking.LocalLockMediators;
@@ -54,11 +55,11 @@ public class DynamoDBKVStorageManager implements KeyValueStorageManager {
     _lockExpiresMS = config.getLong(GraphDatabaseConfiguration.LOCK_EXPIRE_MS,
                                     GraphDatabaseConfiguration.LOCK_EXPIRE_MS_DEFAULT);
 
-    _llmPrefix = config.getString(LOCAL_LOCK_MEDIATOR_PREFIX_KEY, LOCAL_LOCK_MEDIATOR_PREFIX_DEFAULT);
+    _llmPrefix = config.getString(StorageManager.LOCAL_LOCK_MEDIATOR_PREFIX_KEY, LOCAL_LOCK_MEDIATOR_PREFIX_DEFAULT);
 
 
     _rid = ConfigHelper.getRid(config);
-    _idManager = new OrderedKeyColumnValueIDManager(_openDatabase("blocks_allocated", null, null), _rid, config);
+    _idManager = new OrderedKeyColumnValueIDManager(new OrderedKeyValueStoreAdapter(_openDatabase("blocks_allocated", null, null)), _rid, config);
   }
 
   @Override
