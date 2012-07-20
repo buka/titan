@@ -10,6 +10,7 @@ import com.thinkaurelius.titan.diskstorage.berkeleydb.je.BerkeleyJEStorageAdapte
 import com.thinkaurelius.titan.diskstorage.cassandra.CassandraThriftStorageManager;
 import com.thinkaurelius.titan.diskstorage.hbase.HBaseStorageManager;
 import com.thinkaurelius.titan.diskstorage.dynamodb.DynamoDBStorageManager;
+import com.thinkaurelius.titan.diskstorage.dynamodb.DynamoDBKVStorageAdapter;
 import com.thinkaurelius.titan.graphdb.blueprints.BlueprintsDefaultTypeMaker;
 import com.thinkaurelius.titan.graphdb.database.idassigner.VertexIDAssigner;
 import com.thinkaurelius.titan.graphdb.database.idassigner.SimpleVertexIDAssigner;
@@ -56,6 +57,7 @@ public class GraphDatabaseConfiguration {
         put("cassandra", CassandraThriftStorageManager.class);
         put("hbase", HBaseStorageManager.class);
         put("dynamodb", DynamoDBStorageManager.class);
+        put("dynamodbkv", DynamoDBKVStorageAdapter.class);
         put("astyanax", AstyanaxStorageManager.class);
     }};
 
